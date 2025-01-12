@@ -128,6 +128,7 @@ class SFTTrainer(Trainer):
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
         peft_config: Optional["PeftConfig"] = None,
         formatting_func: Optional[Callable] = None,
+        activate_neuron: Optional[list] = None,
     ):
         if args is None:
             args = SFTConfig(output_dir="tmp_trainer")
