@@ -77,7 +77,7 @@ REQUIRED_PKGS = [
     "accelerate>=0.34.0",
     "datasets>=2.21.0",
     "rich",  # rich shouldn't be a required package for trl, we should remove it from here
-    "transformers>=4.46.0",
+    "transformers@git+https://github.com/DRXD1000/transformers.git@neuron_training",
 ]
 EXTRAS = {
     # Windows support is partially supported with DeepSpeed https://github.com/microsoft/DeepSpeed/tree/master#windows
