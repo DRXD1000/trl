@@ -130,6 +130,7 @@ class SFTTrainer(Trainer):
         formatting_func: Optional[Callable] = None,
         activate_neuron: Optional[list] = None,
     ):
+
         if args is None:
             args = SFTConfig(output_dir="tmp_trainer")
         elif args is not None and args.__class__.__name__ == "TrainingArguments":
@@ -317,6 +318,7 @@ class SFTTrainer(Trainer):
             callbacks=callbacks,
             optimizers=optimizers,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+            activate_neuron = activate_neuron,
         )
 
         # Add tags for models that have been loaded with the correct transformers version
