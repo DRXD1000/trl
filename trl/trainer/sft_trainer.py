@@ -129,6 +129,7 @@ class SFTTrainer(Trainer):
         peft_config: Optional["PeftConfig"] = None,
         formatting_func: Optional[Callable] = None,
         activate_neuron: Optional[list] = None,
+        index_dict: Optional[dict] = None,
     ):
 
         if args is None:
@@ -319,6 +320,7 @@ class SFTTrainer(Trainer):
             optimizers=optimizers,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics,
             activate_neuron = activate_neuron,
+            index_dict = index_dict
         )
 
         # Add tags for models that have been loaded with the correct transformers version
