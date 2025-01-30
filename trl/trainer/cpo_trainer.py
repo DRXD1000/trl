@@ -61,7 +61,8 @@ from .utils import (
     pad_to_length,
     peft_module_casting_to_bf16,
 )
-
+#TODO: add is_liger_available and implement fallback
+from liger_kernel import LigerFusedLinearSimPOLoss
 
 if is_peft_available():
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
@@ -308,8 +309,21 @@ class CPOTrainer(Trainer):
                 UserWarning,
             )
 
+#        if args.loss_type == "simpo":
+#            self.simpo_gamma = args.simpo_gamma
+        # initizalize ligersimpoloss
         if args.loss_type == "simpo":
             self.simpo_gamma = args.simpo_gamma
+            # Instantiate the LigerFusedLinearSimPOLoss
+            self.simpo_loss_fn = LigerFusedLinearSimPOLoss(
+                ignore_index=self.label_pad_token_id,
+                beta=self.beta,
+                alpha=self.cpo_alpha,
+                label_smoothing=self.label_smoothing,
+                compute_nll_loss=True,
+                compiled=True,
+                gamma=self.simpo_gamma,
+            )
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
@@ -633,6 +647,7 @@ class CPOTrainer(Trainer):
         self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
+        concatenated_labels: torch.LongTensor, # Add this argument
     ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the CPO loss for a batch of policy and reference model log probabilities.
 
@@ -646,19 +661,19 @@ class CPOTrainer(Trainer):
             The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
         """
         logits = (policy_chosen_logps - policy_rejected_logps).to(self.accelerator.device)
-
+        
         # The beta is a temperature parameter for the CPO loss, typically something in the range of 0.1 to 0.5.
         # We ignore the reference model as beta -> 0. The label_smoothing parameter encodes our uncertainty about the labels and
         # calculates a conservative CPO loss.
 
         if self.loss_type == "simpo":
-            gamma_logratios = self.simpo_gamma / self.beta
-            logits = logits - gamma_logratios
-            # This reduces to Equation 3 from the CPO paper when label_smoothing -> 0.
-            losses = (
-                -F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
-                - F.logsigmoid(-self.beta * logits) * self.label_smoothing
+            # Use the LigerFusedLinearSimPOLoss
+            loss, chosen_rewards, rejected_rewards = self.simpo_loss_fn(
+                lin_weight=torch.eye(logits.shape[0]).to(self.accelerator.device), # Dummy weight for linear layer
+                _input=logits.unsqueeze(1), # Add a dummy dimension for the linear layer
+                target=concatenated_labels, # Pass the concatenated labels
             )
+            return loss.unsqueeze(0), chosen_rewards, rejected_rewards # Add a dummy dimension to loss
         elif self.loss_type == "sigmoid":
             # This reduces to Equation 3 from the CPO paper when label_smoothing -> 0.
             losses = (
@@ -717,7 +732,7 @@ class CPOTrainer(Trainer):
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
         else:
             return (per_token_logps * loss_mask).sum(-1)
-
+    # pass the concatenated labels to get_batch_logps method
     def concatenated_forward(
         self, model: nn.Module, batch: dict[str, Union[list, torch.LongTensor]]
     ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
@@ -812,35 +827,28 @@ class CPOTrainer(Trainer):
         ) = forward_output[:5]
         if self.aux_loss_enabled:
             aux_loss = forward_output[5]
-
+        
+        # Pass the concatenated labels to cpo_loss
+        concatenated_labels = batch["concatenated_labels"].to(self.accelerator.device)
         losses, chosen_rewards, rejected_rewards = self.cpo_loss(
             policy_chosen_logps,
             policy_rejected_logps,
+            concatenated_labels
         )
 
         loss = losses.mean() + self.cpo_alpha * policy_nll_loss
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
         prefix = "eval_" if train_eval == "eval" else ""
-        metrics[f"{prefix}rewards/chosen"] = self.accelerator.gather_for_metrics(chosen_rewards).mean().item()
-        metrics[f"{prefix}rewards/rejected"] = self.accelerator.gather_for_metrics(rejected_rewards).mean().item()
-        metrics[f"{prefix}rewards/accuracies"] = self.accelerator.gather_for_metrics(reward_accuracies).mean().item()
-        metrics[f"{prefix}rewards/margins"] = (
-            self.accelerator.gather_for_metrics(chosen_rewards - rejected_rewards).mean().item()
-        )
-        metrics[f"{prefix}logps/rejected"] = (
-            self.accelerator.gather_for_metrics(policy_rejected_logps).detach().mean().item()
-        )
-        metrics[f"{prefix}logps/chosen"] = (
-            self.accelerator.gather_for_metrics(policy_chosen_logps).detach().mean().item()
-        )
-        metrics[f"{prefix}logits/rejected"] = (
-            self.accelerator.gather_for_metrics(policy_rejected_logits).detach().mean().item()
-        )
-        metrics[f"{prefix}logits/chosen"] = (
-            self.accelerator.gather_for_metrics(policy_chosen_logits).detach().mean().item()
-        )
-        metrics[f"{prefix}nll_loss"] = self.accelerator.gather_for_metrics(policy_nll_loss).detach().mean().item()
+        metrics[f"rewards/chosen"] = chosen_rewards.mean().cpu()
+        metrics[f"rewards/rejected"] = rejected_rewards.mean().cpu()
+        metrics[f"rewards/accuracies"] = reward_accuracies.mean().cpu()
+        metrics[f"rewards/margins"] = (chosen_rewards - rejected_rewards).mean().cpu()
+        metrics[f"logps/rejected"] = policy_rejected_logps.detach().mean().cpu()
+        metrics[f"logps/chosen"] = policy_chosen_logps.detach().mean().cpu()
+        metrics[f"logits/rejected"] = policy_rejected_logits.detach().mean().cpu()
+        metrics[f"logits/chosen"] = policy_chosen_logits.detach().mean().cpu()
+        metrics[f"nll_loss"] = policy_nll_loss.detach().mean().cpu()
 
         if self.aux_loss_enabled:
             loss += self.aux_loss_coef * aux_loss
