@@ -62,7 +62,7 @@ from .utils import (
     peft_module_casting_to_bf16,
 )
 #TODO: add is_liger_available and implement fallback
-from liger_kernel import LigerFusedLinearSimPOLoss, LigerCrossEntropyLoss
+from liger_kernel import LigerFusedLinearSimPOLoss
 
 if is_peft_available():
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
@@ -323,12 +323,6 @@ class CPOTrainer(Trainer):
                 compute_nll_loss=True,
                 compiled=True,
                 gamma=self.simpo_gamma,
-            )
-            # Instantiate the LigerCrossEntropyLoss
-            self.liger_cross_entropy_loss = LigerCrossEntropyLoss(
-                    ignore_index=self.label_pad_token_id,
-                    label_smoothing=self.label_smoothing,
-                    reduction="mean"
             )
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
@@ -774,33 +768,20 @@ class CPOTrainer(Trainer):
         )
         all_logits = outputs.logits
 
-#        def cross_entropy_loss(logits, labels):
-#            if not self.is_encoder_decoder:
- #               # Shift so that tokens < n predict n
-  #              logits = logits[..., :-1, :].contiguous()
-   #             labels = labels[..., 1:].contiguous()
-    #        # Flatten the tokens
-     #       loss_fct = nn.CrossEntropyLoss()
-      #      logits = logits.view(-1, logits.shape[-1])
-       #     labels = labels.view(-1)
-        #    # Enable model parallelism
-         #   labels = labels.to(logits.device)
-          #  loss = loss_fct(logits, labels)
-           # return loss
-        # Use LigerCrossEntropyLoss instead of the standard one
         def cross_entropy_loss(logits, labels):
             if not self.is_encoder_decoder:
                 # Shift so that tokens < n predict n
                 logits = logits[..., :-1, :].contiguous()
                 labels = labels[..., 1:].contiguous()
             # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
             logits = logits.view(-1, logits.shape[-1])
             labels = labels.view(-1)
             # Enable model parallelism
             labels = labels.to(logits.device)
-            loss = self.liger_cross_entropy_loss(logits, labels)
+            loss = loss_fct(logits, labels)
             return loss
-            
+
         labels = concatenated_batch["concatenated_labels"].clone()
 
         if self.cpo_alpha == 0:
